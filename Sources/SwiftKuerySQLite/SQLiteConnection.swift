@@ -23,6 +23,119 @@ import SwiftKuery
 
 import Foundation
 
+public enum DataType {
+    case String
+    case Float
+    case Integer
+    case Blob
+    case Null
+    case Double
+}
+
+public enum ActionType {
+    case CreateTable
+    case CreateIndex
+    case AddColumn
+}
+
+public class Value {
+    
+    var floatValue: Float?
+    var intValue: Int?
+    var stringValue: String?
+    var doubleValue: Double?
+    var blobValue: Data?
+    var type: DataType
+    
+    init(value: Float) {
+        type = .Float
+        floatValue = value
+    }
+    
+    init(value: Double) {
+        type = .Double
+        doubleValue = value
+    }
+    
+    init(value: Data) {
+        type = .Blob
+        blobValue = value
+    }
+    
+    init(value: Int) {
+        type = .Integer
+        intValue = value
+    }
+    
+    init(value: String) {
+        type = .String
+        stringValue = value
+    }
+    
+    init(value: NSNull) {
+        type = .Null
+    }
+    
+}
+
+public class Action {
+    
+    var builtStatement: String
+    var actionType: ActionType
+    
+    init(createTable: String, keyColumnName: String, keyColumnType: DataType) {
+        actionType = .CreateTable
+        switch keyColumnType {
+        case .Integer:
+            builtStatement = "CREATE TABLE IF NOT EXISTS \(createTable) (\(keyColumnName) INTEGER PRIMARY KEY AUTOINCREMENT); "
+        case .String:
+            builtStatement = "CREATE TABLE IF NOT EXISTS \(createTable) (\(keyColumnName) TEXT PRIMARY KEY); "
+        default:
+            builtStatement = "CREATE TABLE IF NOT EXISTS \(createTable) (\(keyColumnName) INTEGER PRIMARY KEY AUTOINCREMENT); "
+        }
+        
+    }
+    
+    init(createIndexOnTable: String, keyColumnName: String, ascending: Bool) {
+        actionType = .CreateIndex
+        
+        if ascending {
+            builtStatement = "CREATE INDEX IF NOT EXISTS idx_\(createIndexOnTable)_\(keyColumnName) ON \(createIndexOnTable) (\(keyColumnName) ASC);"
+        } else {
+            builtStatement = "CREATE INDEX IF NOT EXISTS idx_\(createIndexOnTable)_\(keyColumnName) ON \(createIndexOnTable) (\(keyColumnName) DESC);"
+        }
+        
+    }
+    
+    init(addColumn: String, type: DataType, table: String) {
+        
+        self.actionType = .AddColumn
+        
+        switch type {
+        case .String:
+            builtStatement = "ALTER TABLE \(table) ADD COLUMN \(addColumn) TEXT;"
+        case .Float:
+            builtStatement = "ALTER TABLE \(table) ADD COLUMN \(addColumn) NUMERIC;"
+        case .Double:
+            builtStatement = "ALTER TABLE \(table) ADD COLUMN \(addColumn) REAL;"
+        case .Integer:
+            builtStatement = "ALTER TABLE \(table) ADD COLUMN \(addColumn) INTEGER;"
+        case .Blob:
+            builtStatement = "ALTER TABLE \(table) ADD COLUMN \(addColumn) BLOB;"
+        default:
+            builtStatement = "ALTER TABLE \(table) ADD COLUMN \(addColumn) BLOB;"
+        }
+        
+    }
+    
+}
+
+extension Data {
+    func hexEncodedString() -> String {
+        return map { String(format: "%02hhx", $0) }.joined()
+    }
+}
+
 /// An implementation of `SwiftKuery.Connection` protocol for SQLite.
 /// Please see [SQLite manual](https://sqlite.org/capi3ref.html) for details.
 public class SQLiteConnection: Connection {
@@ -115,6 +228,27 @@ public class SQLiteConnection: Connection {
     public func execute(_ raw: String, onCompletion: @escaping ((QueryResult) -> ())) {
         executeQuery(query: raw, onCompletion: onCompletion)
     }
+    
+    /// Executes an array of built actions as raw queries.
+    ///
+    /// - parameter raw:          The full raw query to execute
+    /// - parameter onCompletion: The result
+    internal func execute(_ actions: [Action], onCompletion: @escaping (() -> ())) {
+        for stmt in actions {
+            execute(stmt.builtStatement, onCompletion: { (QueryResult) in })
+        }
+        onCompletion()
+    }
+    
+    /// Executes a statement .
+    ///
+    /// - parameter raw:          The full raw query to execute
+    /// - parameter onCompletion: The result
+    internal func execute(_ actions: [Action]) {
+        for stmt in actions {
+            execute(stmt.builtStatement, onCompletion: { (QueryResult) in })
+        }
+    }
 
     /// Execute a query with parameters.
     ///
@@ -131,6 +265,43 @@ public class SQLiteConnection: Connection {
     /// - parameter onCompletion: The result
     public func execute(_ raw: String, parameters: [Any], onCompletion: @escaping ((QueryResult) -> ())) {
         executeQuery(query: raw, onCompletion: onCompletion)
+    }
+    
+    /// Executes a raw query with array of Values to be substituted.
+    ///
+    /// - parameter raw:          The full raw query to execute
+    /// - parameter parameters:   The values to bind into the statement
+    /// - parameter onCompletion: The result
+    public func execute(_ raw: String, parameters: [Value], onCompletion: @escaping ((QueryResult) -> ())) {
+        
+        var stmt: String! = raw
+        
+        // no way to bind params at the moment, so using this hacky as hell workaround until binding & statements are added
+        for v in parameters {
+            
+            var strValue: String
+            switch v.type {
+            case .Null:
+                strValue = "NULL"
+            case .Double:
+                strValue = "\(v.doubleValue)"
+            case .Float:
+                strValue = "\(v.floatValue)"
+            case .Integer:
+                strValue = "\(v.intValue)"
+            case .Blob:
+                strValue = "x'\(v.blobValue?.hexEncodedString())'"
+            case .String:
+                let temp = v.stringValue?.data(using: .utf8)?.hexEncodedString()
+                strValue = "cast(x'\(temp)' as varchar)"
+            }
+            
+            stmt.replaceSubrange(stmt.range(of: "?")!, with: strValue)
+            
+        }
+        
+        execute(stmt, onCompletion: onCompletion)
+        
     }
 
     /// Actually executes the query
